@@ -14,12 +14,9 @@ exports.handler = function(event, context) {
 	console.log("Reading options from event:\n", util.inspect(event, {depth: 5}));
 	var srcBucket = event.Records[0].s3.bucket.name;
 	var srcKey    = event.Records[0].s3.object.key;
-  var dstBucket = srcBucket;//.replace("-inbox", "");
+  var dstBucket = srcBucket.replace("-inbox", "");
   var dstKey    = srcKey;
   var imageType = "";
-	// var srcBucket = srcBucket + "resized";
-	// var srcBucket = "viu-photo-final";
-	// var srcKey    = srcKey;
 
 	// Infer the image type.
 	var typeMatch = srcKey.match(/\.([^.]*)$/);
