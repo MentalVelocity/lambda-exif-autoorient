@@ -14,6 +14,9 @@ exports.handler = function(event, context) {
 	console.log("Reading options from event:\n", util.inspect(event, {depth: 5}));
 	var srcBucket = event.Records[0].s3.bucket.name;
 	var srcKey    = event.Records[0].s3.object.key;
+  var dstBucket = srcBucket;//.replace("-inbox", "");
+  var dstKey    = srcKey;
+  var imageType = "";
 	// var srcBucket = srcBucket + "resized";
 	// var srcBucket = "viu-photo-final";
 	// var srcKey    = srcKey;
@@ -24,7 +27,7 @@ exports.handler = function(event, context) {
 		console.error('unable to infer image type for key ' + srcKey);
 		return;
 	}
-	var imageType = typeMatch[1];
+	imageType = typeMatch[1].toLowerCase();
 	if (imageType != "jpg" && imageType != "png") {
 		console.log('skipping non-image ' + srcKey);
 		return;
@@ -44,8 +47,7 @@ exports.handler = function(event, context) {
 			gm(response.Body).orientation(function(err, value) {
                 if (value==='Undefined') {
                     console.log("image hasn't any exif orientation data");
-                    context.done();
-                    return;
+                    next(null, response.ContentType, response.Body);
                 } else {
                     console.log("auto orienting image with exif data", value);
 				    // Transform the image buffer in memory.
@@ -57,14 +59,22 @@ exports.handler = function(event, context) {
 							next(null, response.ContentType, buffer);
 						}
 					});
-                }
+        }
 			});
 		},
+    function appendDimensions(contentType, data, next) {
+      gm(data).size(function(err, size) {
+        var width = size.width;
+        var height = size.height;
+        dstKey = srcKey.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
+        next(null, contentType, data);
+      });
+    },
 		function upload(contentType, data, next) {
 			// Stream the transformed image to a different S3 bucket.
 			s3.putObject({
-					Bucket: srcBucket,
-					Key: srcKey,
+					Bucket: dstBucket,
+					Key: dstKey,
 					Body: data,
 					ContentType: contentType,
                     ACL: 'public-read'
@@ -75,13 +85,13 @@ exports.handler = function(event, context) {
 			if (err) {
 				console.error(
 					'Unable to resize ' + srcBucket + '/' + srcKey +
-					' and upload to ' + srcBucket + '/' + srcKey +
+					' and upload to ' + dstBucket + '/' + dstKey +
 					' due to an error: ' + err
 				);
 			} else {
 				console.log(
 					'Successfully resized ' + srcBucket + '/' + srcKey +
-					' and uploaded to ' + srcBucket + '/' + srcKey
+					' and uploaded to ' + dstBucket + '/' + dstKey
 				);
 			}
 
