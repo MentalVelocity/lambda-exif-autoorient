@@ -15,8 +15,11 @@ exports.handler = function(event, context) {
 	var srcBucket = event.Records[0].s3.bucket.name;
 	var srcKey    = event.Records[0].s3.object.key;
   var dstBucket = srcBucket.replace("-inbox", "");
+  var queueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_notifications";
   var dstKey    = srcKey;
   var imageType = "";
+  var width = 0;
+  var height = 0;
 
 	// Infer the image type.
 	var typeMatch = srcKey.match(/\.([^.]*)$/);
@@ -61,33 +64,59 @@ exports.handler = function(event, context) {
 		},
     function appendDimensions(contentType, data, next) {
       gm(data).size(function(err, size) {
-        var width = size.width;
-        var height = size.height;
-        dstKey = srcKey.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
+        width = size.width;
+        height = size.height;
+        dstKey = srcKey;//.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
         next(null, contentType, data);
       });
     },
 		function upload(contentType, data, next) {
 			// Stream the transformed image to a different S3 bucket.
-			s3.putObject({
+			w = width.toString();
+      h = height.toString();
+      console.log('Width: ' + w + '; height: ' + h);
+      s3.putObject({
 					Bucket: dstBucket,
 					Key: dstKey,
 					Body: data,
 					ContentType: contentType,
-                    ACL: 'public-read'
+          ACL: 'public-read',
+          Metadata: {
+            width: w,
+            height: h
+          }
 				},
 				next);
-			}
+			},
+      function writeToQueue(next) {
+        var metadata = {
+          originalFilename: srcKey,
+          files: [{
+            width: width,
+            height: height,
+            url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey
+          }]
+        };
+        var queue = new AWS.SQS({params: {QueueUrl: queueUrl}});
+        queue.sendMessage({ MessageBody: JSON.stringify(metadata) }, next);
+      },
+      function deleteOriginalFile(next) {
+        s3.deleteObject({
+  					Bucket: srcBucket,
+  					Key: srcKey
+  				},
+  				next);
+      }
 		], function (err) {
 			if (err) {
 				console.error(
-					'Unable to resize ' + srcBucket + '/' + srcKey +
+					'Unable to process ' + srcBucket + '/' + srcKey +
 					' and upload to ' + dstBucket + '/' + dstKey +
 					' due to an error: ' + err
 				);
 			} else {
 				console.log(
-					'Successfully resized ' + srcBucket + '/' + srcKey +
+					'Successfully processed ' + srcBucket + '/' + srcKey +
 					' and uploaded to ' + dstBucket + '/' + dstKey
 				);
 			}
