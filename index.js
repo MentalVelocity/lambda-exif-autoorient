@@ -8,6 +8,8 @@ var _ = require('underscore');
 
 // get reference to S3 client
 var s3 = new AWS.S3();
+var sqs = new AWS.SQS();
+var queueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_notifications";
 
 exports.handler = function(event, context) {
 	// Read options from the event.
@@ -15,7 +17,6 @@ exports.handler = function(event, context) {
 	var srcBucket = event.Records[0].s3.bucket.name;
 	var srcKey    = event.Records[0].s3.object.key;
   var dstBucket = srcBucket.replace("-inbox", "");
-  var queueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_notifications";
   var dstKey    = srcKey;
   var imageType = "";
   var width = 0;
@@ -41,18 +42,19 @@ exports.handler = function(event, context) {
 					Bucket: srcBucket,
 					Key: srcKey
 				},
-				next);
+        function (err, response) {
+				  next(err, response);
+        });
 			},
-		function tranform(response, next) {
+		function transform(response, next) {
 			gm(response.Body).orientation(function(err, value) {
-                if (value==='Undefined') {
-                    console.log("image hasn't any exif orientation data");
-                    next(null, response.ContentType, response.Body);
-                } else {
-                    console.log("auto orienting image with exif data", value);
+        if (value==='Undefined') {
+            console.log("image hasn't any exif orientation data");
+            next(null, response.ContentType, response.Body);
+        } else {
+            console.log("auto orienting image with exif data", value);
 				    // Transform the image buffer in memory.
-				    this.autoOrient()//(width, height)
-					.toBuffer(imageType, function(err, buffer) {
+				    this.autoOrient().toBuffer(imageType, function(err, buffer) {
 						if (err) {
 							next(err);
 						} else {
@@ -64,10 +66,14 @@ exports.handler = function(event, context) {
 		},
     function appendDimensions(contentType, data, next) {
       gm(data).size(function(err, size) {
-        width = size.width;
-        height = size.height;
-        dstKey = srcKey;//.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
-        next(null, contentType, data);
+        if (err) {
+          next(err);
+        } else {
+          width = size.width;
+          height = size.height;
+          dstKey = srcKey;//.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
+          next(null, contentType, data);
+        }
       });
     },
 		function upload(contentType, data, next) {
@@ -76,52 +82,64 @@ exports.handler = function(event, context) {
       h = height.toString();
       console.log('Width: ' + w + '; height: ' + h);
       s3.putObject({
-					Bucket: dstBucket,
-					Key: dstKey,
-					Body: data,
-					ContentType: contentType,
-          ACL: 'public-read',
-          Metadata: {
-            width: w,
-            height: h
-          }
-				},
-				next);
-			},
-      function writeToQueue(next) {
-        var metadata = {
-          originalFilename: srcKey,
-          files: [{
-            width: width,
-            height: height,
-            url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey
-          }]
-        };
-        var queue = new AWS.SQS({params: {QueueUrl: queueUrl}});
-        queue.sendMessage({ MessageBody: JSON.stringify(metadata) }, next);
-      },
-      function deleteOriginalFile(next) {
-        s3.deleteObject({
-  					Bucket: srcBucket,
-  					Key: srcKey
-  				},
-  				next);
-      }
-		], function (err) {
-			if (err) {
-				console.error(
-					'Unable to process ' + srcBucket + '/' + srcKey +
-					' and upload to ' + dstBucket + '/' + dstKey +
-					' due to an error: ' + err
-				);
-			} else {
-				console.log(
-					'Successfully processed ' + srcBucket + '/' + srcKey +
-					' and uploaded to ' + dstBucket + '/' + dstKey
-				);
-			}
-
-			context.done();
+				Bucket: dstBucket,
+				Key: dstKey,
+				Body: data,
+				ContentType: contentType,
+        ACL: 'public-read',
+        Metadata: {
+          width: w,
+          height: h
+        }
+			}, function(err, data) {
+        next(err, data);
+      });
+		},
+    function writeToQueue(data, next) {
+      var metadata = {
+        originalFilename: srcKey,
+        width: width,
+        height: height,
+        url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey
+      };
+      var json = JSON.stringify(metadata);
+      console.log("Sending message to SQS: " + json);
+      sqs.sendMessage({
+        MessageBody: json,
+        QueueUrl: queueUrl
+      }, function(err, data) {
+        if (err) {
+          console.error(err);
+          next(err);
+        } else {
+          console.error("SQS write successful");
+          next(null);
+        }
+      });
+    },
+    function deleteOriginalFile(next) {
+      console.log("Deleting original file...");
+      s3.deleteObject({
+        Bucket: srcBucket,
+        Key: srcKey
+      }, function(err, data) {
+        next(err);
+      });
+    }
+	], function (err) {
+		if (err) {
+			console.error(
+				'Unable to process ' + srcBucket + '/' + srcKey +
+				' and upload to ' + dstBucket + '/' + dstKey +
+				' due to an error: ' + err
+			);
+		} else {
+			console.log(
+				'Successfully processed ' + srcBucket + '/' + srcKey +
+				' and uploaded to ' + dstBucket + '/' + dstKey
+			);
 		}
-	);
+
+		context.done();
+	});
 };
