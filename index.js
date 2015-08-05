@@ -15,6 +15,7 @@ var prodQueueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_
 var devVideoPipelineId = "1437962088972-25fnit";
 var prodVideoPipelineId = "1437962171995-pmsi72";
 var videoPresetId = "1351620000001-100070"; // "web" preset
+var audioPresetId = "1351620000001-300040"; // mp3 128k preset
 
 exports.handler = function(event, context) {
   // Read options from the event.
@@ -24,6 +25,7 @@ exports.handler = function(event, context) {
   var environment = srcBucket.indexOf("-production") > -1 ? "production" : "development";
   var queueUrl = environment == "production" ? prodQueueUrl : devQueueUrl;
   var videoPipelineId = environment == "production" ? prodVideoPipelineId : devVideoPipelineId;
+  var audioPipelineId = videoPipelineId
   var dstBucket = srcBucket.replace("-inbox", "");
   var dstKey    = srcKey;
   var archiveBucket = srcBucket.replace("-inbox", "-archive");
@@ -57,6 +59,7 @@ exports.handler = function(event, context) {
       fileType = 'video';
       break;
     case "mp3":
+    case 'm4a':
       fileType = 'audio';
       break;
     default:
@@ -192,9 +195,24 @@ exports.handler = function(event, context) {
   }
 
   if (fileType == 'audio') {
+    dstKey = dstKey.replace("." + extension, ".mp3");
     console.log("Filetype identified as audio...");
+    var xcoder_params = {
+      Input: {
+        Key: srcKey
+      },
+      PipelineId: audioPipelineId,
+      Outputs: [
+        {
+          Key: dstKey,
+          PresetId: audioPresetId
+        }
+      ]
+    };
+    console.log("audio job params: " + JSON.stringify(xcoder_params))
+
     async.waterfall([
-      function download(next) {
+      function getFile(next) {
         // Download the image from S3 into a buffer.
         s3.getObject({
           Bucket: srcBucket,
@@ -208,33 +226,25 @@ exports.handler = function(event, context) {
           }
         });
       },
-      function upload(contentType, data, next) {
+      function writeFileToArchive(contentType, data, next) {
         s3.putObject({
-          Bucket: dstBucket,
-          Key: dstKey,
+          Bucket: archiveBucket,
+          Key: archiveKey,
           Body: data,
           ContentType: contentType,
           ACL: 'public-read'
         }, function(err, data) {
-          next(err, data);
+          next(err);
         });
       },
-      function writeToQueue(data, next) {
-        var metadata = {
-          originalFilename: srcKey,
-          url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey
-        };
-        var json = JSON.stringify(metadata);
-        console.log("Sending message to SQS: " + json);
-        sqs.sendMessage({
-          MessageBody: json,
-          QueueUrl: queueUrl
-        }, function(err, data) {
+      function createTranscoderJob(next) {
+        xcoder.createJob(xcoder_params, function(err, data) {
           if (err) {
-            console.error(err);
+            console.error('Error creating transcoder job for file ' + srcKey + ": " + err);
             next(err);
-          } else {
-            console.error("SQS write succeedful");
+          }
+          else {
+            console.log('Successfully created transcoder job for file ' + srcKey);
             next(null);
           }
         });
@@ -252,22 +262,20 @@ exports.handler = function(event, context) {
       if (err) {
         console.error(
           'Unable to process ' + srcBucket + '/' + srcKey +
-          ' and upload to ' + dstBucket + '/' + dstKey +
           ' due to an error: ' + err
         );
         context.fail();
       } else {
         console.log(
-          'Successfully processed ' + srcBucket + '/' + srcKey +
-          ' and uploaded to ' + dstBucket + '/' + dstKey
+          'Successfully processed ' + srcBucket + '/' + srcKey
         );
       }
-
       context.succeed();
     });
   }
 
   if (fileType == 'video') {
+    dstKey = dstKey.replace("." + extension, ".m4v");
     console.log("Filetype identified as video...");
     var xcoder_params = {
       Input: {
@@ -276,7 +284,7 @@ exports.handler = function(event, context) {
       PipelineId: videoPipelineId,
       Outputs: [
         {
-          ThumbnailPattern: dstKey + "-{count}",
+          ThumbnailPattern: dstKey + "-{count}-{resolution}",
           Key: dstKey,
           PresetId: videoPresetId
         }
