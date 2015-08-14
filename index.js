@@ -14,7 +14,8 @@ var devQueueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_n
 var prodQueueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_notifications_production";
 var devVideoPipelineId = "1437962088972-25fnit";
 var prodVideoPipelineId = "1437962171995-pmsi72";
-var videoPresetId = "1351620000001-100070"; // "web" preset
+//var videoPresetId = "1351620000001-100070"; // "web" preset
+var videoPresetId = "1439263044305-x6bcxl"; // custom web preset
 var audioPresetId = "1351620000001-300040"; // mp3 128k preset
 
 exports.handler = function(event, context) {
@@ -407,7 +408,7 @@ exports.handler = function(event, context) {
       PipelineId: videoPipelineId,
       Outputs: [
         {
-          ThumbnailPattern: dstKey + "-{count}-{resolution}",
+          ThumbnailPattern: dstKey + "-{count}",
           Key: dstKey,
           PresetId: videoPresetId
         }
