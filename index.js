@@ -12,8 +12,10 @@ var sqs = new AWS.SQS();
 var xcoder = new AWS.ElasticTranscoder();
 var devQueueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_notifications_development";
 var prodQueueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_notifications_production";
+var stagingQueueUrl = "https://sqs.us-east-1.amazonaws.com/760079153816/passitdown_notifications_staging";
 var devVideoPipelineId = "1437962088972-25fnit";
 var prodVideoPipelineId = "1437962171995-pmsi72";
+var stagingVideoPipelineId = "1440784627448-wbk7dq";
 //var videoPresetId = "1351620000001-100070"; // "web" preset
 var videoPresetId = "1439263044305-x6bcxl"; // custom web preset
 var audioPresetId = "1351620000001-300040"; // mp3 128k preset
@@ -23,9 +25,9 @@ exports.handler = function(event, context) {
   console.log("Reading options from event:\n", util.inspect(event, {depth: 5}));
   var srcBucket = event.Records[0].s3.bucket.name;
   var srcKey    = event.Records[0].s3.object.key;
-  var environment = srcBucket.indexOf("-production") > -1 ? "production" : "development";
-  var queueUrl = environment == "production" ? prodQueueUrl : devQueueUrl;
-  var videoPipelineId = environment == "production" ? prodVideoPipelineId : devVideoPipelineId;
+  var environment = srcBucket.indexOf("-production") > -1 ? "production" : (srcBucket.indexOf("-staging") > -1 ? "staging" : "development");
+  var queueUrl = environment == "production" ? prodQueueUrl : (environment == "staging" ? stagingQueueUrl : devQueueUrl);
+  var videoPipelineId = environment == "production" ? prodVideoPipelineId : (environment == "staging" ? stagingVideoPipelineId : evVideoPipelineId);
   var audioPipelineId = videoPipelineId
   var dstBucket = srcBucket.replace("-inbox", "");
   var dstKey    = srcKey;
