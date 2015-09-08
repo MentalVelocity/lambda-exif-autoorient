@@ -27,15 +27,21 @@ exports.handler = function(event, context) {
   var srcKey    = event.Records[0].s3.object.key;
   var environment = srcBucket.indexOf("-production") > -1 ? "production" : (srcBucket.indexOf("-staging") > -1 ? "staging" : "development");
   var queueUrl = environment == "production" ? prodQueueUrl : (environment == "staging" ? stagingQueueUrl : devQueueUrl);
-  var videoPipelineId = environment == "production" ? prodVideoPipelineId : (environment == "staging" ? stagingVideoPipelineId : evVideoPipelineId);
+  var videoPipelineId = environment == "production" ? prodVideoPipelineId : (environment == "staging" ? stagingVideoPipelineId : devVideoPipelineId);
   var audioPipelineId = videoPipelineId
   var dstBucket = srcBucket.replace("-inbox", "");
   var dstKey    = srcKey;
+  var dstSmallKey = "small-" + srcKey;
+  var dstMediumKey = "med-" + srcKey;
   var archiveBucket = srcBucket.replace("-inbox", "-archive");
   var archiveKey    = srcKey;
   var extension = "";
   var width = 0;
   var height = 0;
+  var smallWidth = 0;
+  var smallHeight = 0;
+  var medWidth = 0;
+  var medHeight = 0;
   var fileType = "other";
   var imageType = "";
 
@@ -82,13 +88,13 @@ exports.handler = function(event, context) {
     // Download the image from S3, transform, and upload to a different S3 bucket.
     console.log("filetype identified as image...");
 
-    var source_attachable_type = srcKey.indexOf("-story") > -1 ? "story" : "user";
+    var source_attachable_type = srcKey.indexOf("-story") > -1 ? "story" : srcKey.indexOf("-user") > -1 ? "user" : "unknown";
     console.log("Source attachment belongs to: " + source_attachable_type);
     if (source_attachable_type == "story") {
       async.waterfall([
         function download(next) {
         // Download the image from S3 into a buffer.
-        s3.getObject({
+          s3.getObject({
             Bucket: srcBucket,
             Key: srcKey
           },
@@ -120,14 +126,13 @@ exports.handler = function(event, context) {
             }
           });
         },
-        function appendDimensions(contentType, data, next) {
+        function getDimensions(contentType, data, next) {
           gm(data).size(function(err, size) {
             if (err) {
               next(err);
             } else {
               width = size.width;
               height = size.height;
-              dstKey = srcKey;//.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
               next(null, contentType, data);
             }
           });
@@ -148,15 +153,175 @@ exports.handler = function(event, context) {
               height: h
             }
           }, function(err, data) {
-            next(err, data);
+            next(err);
           });
         },
-        function writeToQueue(data, next) {
+        function downloadForSmallImages(next) {
+        // Download the image from S3 into a buffer.
+          s3.getObject({
+            Bucket: srcBucket,
+            Key: srcKey
+          },
+          function (err, response) {
+            if (err) {
+              console.log("failed to fetch s3 object " + srcKey + ": " + err);
+              next(err);
+            } else {
+              console.log("Retrieved s3 object " + srcKey);
+              next(null, response);
+            }
+          });
+        },
+        function transformSmallImages(response, next) {
+          gm(response.Body).orientation(function(err, value) {
+            if (value==='Undefined') {
+                console.log("small image hasn't any exif orientation data");
+                next(null, response.ContentType, response.Body);
+            } else {
+                console.log("auto orienting small image with exif data", value);
+                // Transform the image buffer in memory.
+                this.autoOrient().toBuffer(imageType, function(err, buffer) {
+                if (err) {
+                  next(err);
+                } else {
+                  next(null, response.ContentType, buffer);
+                }
+              });
+            }
+          });
+        },
+        function resizeSmallImages(contentType, data, next) {
+          console.log("Resizing small image");
+          gm(data)
+          .resize(416)
+          .toBuffer(imageType, function(err, buffer) {
+            if (err) {
+              next(err);
+            } else {
+              next(null, contentType, buffer);
+            }
+          });
+        },
+        function getSmallDimensions(contentType, data, next) {
+          console.log("Gettting dimensions for small image");
+          gm(data).size(function(err, size) {
+            if (err) {
+              next(err);
+            } else {
+              smallWidth = size.width;
+              smallHeight = size.height;
+              next(null, contentType, data);
+            }
+          });
+        },
+        function uploadSmallImages(contentType, data, next) {
+          // Stream the transformed image to a different S3 bucket.
+          console.log("Uploading " + dstSmallKey);
+          w = smallWidth.toString();
+          h = smallHeight.toString();
+          s3.putObject({
+            Bucket: dstBucket,
+            Key: dstSmallKey,
+            Body: data,
+            ContentType: contentType,
+            ACL: 'public-read',
+            Metadata: {
+              width: w,
+              height: h
+            }
+          }, function(err, data) {
+            next(err);
+          });
+        },
+        function downloadForMediumImages(next) {
+        // Download the image from S3 into a buffer.
+          s3.getObject({
+            Bucket: srcBucket,
+            Key: srcKey
+          },
+          function (err, response) {
+            if (err) {
+              console.log("failed to fetch s3 object " + srcKey + ": " + err);
+              next(err);
+            } else {
+              console.log("Retrieved s3 object " + srcKey);
+              next(null, response);
+            }
+          });
+        },
+        function transformMediumImages(response, next) {
+          gm(response.Body).orientation(function(err, value) {
+            if (value==='Undefined') {
+                console.log("medium image hasn't any exif orientation data");
+                next(null, response.ContentType, response.Body);
+            } else {
+                console.log("auto orienting medium image with exif data", value);
+                // Transform the image buffer in memory.
+                this.autoOrient().toBuffer(imageType, function(err, buffer) {
+                if (err) {
+                  next(err);
+                } else {
+                  next(null, response.ContentType, buffer);
+                }
+              });
+            }
+          });
+        },
+        function resizeMediumImages(contentType, data, next) {
+          console.log("Resizing medium image");
+          gm(data)
+          .resize(1190)
+          .toBuffer(imageType, function(err, buffer) {
+            if (err) {
+              next(err);
+            } else {
+              next(null, contentType, buffer);
+            }
+          });
+        },
+        function getMediumDimensions(contentType, data, next) {
+          console.log("Getting dimensions for medium image");
+          gm(data).size(function(err, size) {
+            if (err) {
+              next(err);
+            } else {
+              mediumWidth = size.width;
+              mediumHeight = size.height;
+              next(null, contentType, data);
+            }
+          });
+        },
+        function uploadMediumImages(contentType, data, next) {
+          // Stream the transformed image to a different S3 bucket.
+          console.log("Uploading " + dstMediumKey);
+          w = mediumWidth.toString();
+          h = mediumHeight.toString();
+          s3.putObject({
+            Bucket: dstBucket,
+            Key: dstMediumKey,
+            Body: data,
+            ContentType: contentType,
+            ACL: 'public-read',
+            Metadata: {
+              width: w,
+              height: h
+            }
+          }, function(err, data) {
+            next(err);
+          });
+        },
+        function writeToQueue(next) {
           var metadata = {
             originalFilename: srcKey,
             width: width,
             height: height,
-            url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey
+            url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey,
+            smallWidth: smallWidth,
+            smallHeight: smallHeight,
+            smallUrl: "https://s3.amazonaws.com/" + dstBucket + "/" + dstSmallKey,
+            mediumWidth: mediumWidth,
+            mediumHeight: mediumHeight,
+            mediumUrl: "https://s3.amazonaws.com/" + dstBucket + "/" + dstMediumKey
           };
           var json = JSON.stringify(metadata);
           console.log("Sending message to SQS: " + json);
@@ -199,124 +364,126 @@ exports.handler = function(event, context) {
         context.succeed();
       });
     } else {
-      // *** PROFILE IMAGES ***
-      async.waterfall([
-        function download(next) {
-        // Download the image from S3 into a buffer.
-        s3.getObject({
-            Bucket: srcBucket,
-            Key: srcKey
+      if (source_attachable_type == "user") {
+        // *** PROFILE IMAGES ***
+        async.waterfall([
+          function download(next) {
+          // Download the image from S3 into a buffer.
+          s3.getObject({
+              Bucket: srcBucket,
+              Key: srcKey
+            },
+            function (err, response) {
+              if (err) {
+                console.log("failed to fetch s3 object " + srcKey + ": " + err);
+                next(err);
+              } else {
+                console.log("Retrieved s3 object " + srcKey);
+                next(null, response);
+              }
+            });
           },
-          function (err, response) {
-            if (err) {
-              console.log("failed to fetch s3 object " + srcKey + ": " + err);
+          function transform(response, next) {
+            gm(response.Body).orientation(function(err, value) {
+              if (value==='Undefined') {
+                  console.log("image hasn't any exif orientation data");
+                  next(null, response.ContentType, response.Body);
+              } else {
+                  console.log("auto orienting image with exif data", value);
+                  // Transform the image buffer in memory.
+                  this.autoOrient()
+                      .resize(240, 240, "^")
+                      .gravity("Center")
+                      .extent(240, 240)
+                      .toBuffer(imageType, function(err, buffer) {
+                  if (err) {
+                    next(err);
+                  } else {
+                    next(null, response.ContentType, buffer);
+                  }
+                });
+              }
+            });
+          },
+          function appendDimensions(contentType, data, next) {
+            gm(data).size(function(err, size) {
+              if (err) {
+                next(err);
+              } else {
+                width = size.width;
+                height = size.height;
+                dstKey = srcKey;//.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
+                next(null, contentType, data);
+              }
+            });
+          },
+          function upload(contentType, data, next) {
+            // Stream the transformed image to a different S3 bucket.
+            w = width.toString();
+            h = height.toString();
+            console.log('Width: ' + w + '; height: ' + h);
+            s3.putObject({
+              Bucket: dstBucket,
+              Key: dstKey,
+              Body: data,
+              ContentType: contentType,
+              ACL: 'public-read',
+              Metadata: {
+                width: w,
+                height: h
+              }
+            }, function(err, data) {
+              next(err, data);
+            });
+          },
+          function writeToQueue(data, next) {
+            var metadata = {
+              originalFilename: srcKey,
+              width: width,
+              height: height,
+              url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey
+            };
+            var json = JSON.stringify(metadata);
+            console.log("Sending message to SQS: " + json);
+            sqs.sendMessage({
+              MessageBody: json,
+              QueueUrl: queueUrl
+            }, function(err, data) {
+              if (err) {
+                console.error(err);
+                next(err);
+              } else {
+                console.error("SQS write successful");
+                next(null);
+              }
+            });
+          },
+          function deleteOriginalFile(next) {
+            console.log("Deleting original file...");
+            s3.deleteObject({
+              Bucket: srcBucket,
+              Key: srcKey
+            }, function(err, data) {
               next(err);
-            } else {
-              console.log("Retrieved s3 object " + srcKey);
-              next(null, response);
-            }
-          });
-        },
-        function transform(response, next) {
-          gm(response.Body).orientation(function(err, value) {
-            if (value==='Undefined') {
-                console.log("image hasn't any exif orientation data");
-                next(null, response.ContentType, response.Body);
-            } else {
-                console.log("auto orienting image with exif data", value);
-                // Transform the image buffer in memory.
-                this.autoOrient()
-                    .resize(240, 240, "^")
-                    .gravity("Center")
-                    .extent(240, 240)
-                    .toBuffer(imageType, function(err, buffer) {
-                if (err) {
-                  next(err);
-                } else {
-                  next(null, response.ContentType, buffer);
-                }
-              });
-            }
-          });
-        },
-        function appendDimensions(contentType, data, next) {
-          gm(data).size(function(err, size) {
-            if (err) {
-              next(err);
-            } else {
-              width = size.width;
-              height = size.height;
-              dstKey = srcKey;//.replace("." + imageType, "_" + width + "x" + height + "." + imageType)
-              next(null, contentType, data);
-            }
-          });
-        },
-        function upload(contentType, data, next) {
-          // Stream the transformed image to a different S3 bucket.
-          w = width.toString();
-          h = height.toString();
-          console.log('Width: ' + w + '; height: ' + h);
-          s3.putObject({
-            Bucket: dstBucket,
-            Key: dstKey,
-            Body: data,
-            ContentType: contentType,
-            ACL: 'public-read',
-            Metadata: {
-              width: w,
-              height: h
-            }
-          }, function(err, data) {
-            next(err, data);
-          });
-        },
-        function writeToQueue(data, next) {
-          var metadata = {
-            originalFilename: srcKey,
-            width: width,
-            height: height,
-            url: "https://s3.amazonaws.com/" + dstBucket + "/" + dstKey
-          };
-          var json = JSON.stringify(metadata);
-          console.log("Sending message to SQS: " + json);
-          sqs.sendMessage({
-            MessageBody: json,
-            QueueUrl: queueUrl
-          }, function(err, data) {
-            if (err) {
-              console.error(err);
-              next(err);
-            } else {
-              console.error("SQS write successful");
-              next(null);
-            }
-          });
-        },
-        function deleteOriginalFile(next) {
-          console.log("Deleting original file...");
-          s3.deleteObject({
-            Bucket: srcBucket,
-            Key: srcKey
-          }, function(err, data) {
-            next(err);
-          });
-        }
-      ], function (err) {
-        if (err) {
-          console.error(
-            'Unable to process ' + srcBucket + '/' + srcKey +
-            ' and upload to ' + dstBucket + '/' + dstKey +
-            ' due to an error: ' + err
-          );
-          context.fail();
-        } else {
-          console.log(
-            'Successfully processed ' + srcBucket + '/' + srcKey +
-            ' and uploaded to ' + dstBucket + '/' + dstKey
-          );
-        }
-        context.succeed();
-      });
+            });
+          }
+        ], function (err) {
+          if (err) {
+            console.error(
+              'Unable to process ' + srcBucket + '/' + srcKey +
+              ' and upload to ' + dstBucket + '/' + dstKey +
+              ' due to an error: ' + err
+            );
+            context.fail();
+          } else {
+            console.log(
+              'Successfully processed ' + srcBucket + '/' + srcKey +
+              ' and uploaded to ' + dstBucket + '/' + dstKey
+            );
+          }
+          context.succeed();
+        });
+      }
     }
   }
 
