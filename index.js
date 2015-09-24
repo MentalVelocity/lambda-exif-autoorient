@@ -387,7 +387,17 @@ exports.handler = function(event, context) {
             gm(response.Body).orientation(function(err, value) {
               if (value==='Undefined') {
                   console.log("image hasn't any exif orientation data");
-                  next(null, response.ContentType, response.Body);
+                  // Transform the image buffer in memory.
+                  this.resize(240, 240, "^")
+                      .gravity("Center")
+                      .extent(240, 240)
+                      .toBuffer(imageType, function(err, buffer) {
+                  if (err) {
+                    next(err);
+                  } else {
+                    next(null, response.ContentType, buffer);
+                  }
+                });
               } else {
                   console.log("auto orienting image with exif data", value);
                   // Transform the image buffer in memory.
